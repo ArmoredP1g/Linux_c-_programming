@@ -8,8 +8,11 @@
                 "-fdiagnostics-color=always",
                 "-g",
                 "${file}",
+                "${fileDirname}/source/ThreadPool.cpp",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}",
+                "-I",
+                "${fileDirname}/inc",
                 "-l",
                 "pthread"
             ],

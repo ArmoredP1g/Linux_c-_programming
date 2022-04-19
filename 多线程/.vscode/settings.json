@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "*.py": "python",
+        "thread": "cpp",
+        "new": "cpp",
+        "condition_variable": "cpp",
+        "iostream": "cpp"
+    }
+}
