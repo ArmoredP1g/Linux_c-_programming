@@ -2,9 +2,17 @@
 #include <iostream>
 #include <string.h>
 #include <string>
+#include <unistd.h>
 
 using namespace std;
+#define NUMBER 2
+
 TaskQueue::TaskQueue()
+{
+
+}
+
+TaskQueue::~TaskQueue()
 {
 
 }
@@ -16,7 +24,7 @@ void TaskQueue::AddTask(Task task)
     this->mtx.unlock();
 }
 
-void TaskQueue::AddTask(callback f, void* arg)
+void TaskQueue::AddTask(callback f, int* arg)
 {
     this->mtx.lock();
     this->m_taskQ.push(Task(f,arg));
@@ -45,13 +53,13 @@ ThreadPool::ThreadPool(int min, int max)
     do
     {
         this->threadIDs = new(std::nothrow) thread[max];
-        this->thread_avaliable = new(std::nothrow) bool[max];
-        if (threadIDs == nullptr || thread_avaliable == nullptr || taskQ == nullptr){
+        this->thread_running = new(std::nothrow) bool[max];
+        if (threadIDs == nullptr || thread_running == nullptr || taskQ == nullptr){
             cout << "malloc threadIDs or taskQueue failed.." << endl;
             break;
         }
         memset(this->threadIDs, 0, sizeof(thread)*max);
-        memset(this->thread_avaliable, false, sizeof(bool)*max);
+        memset(this->thread_running, false, sizeof(bool)*max);
         this->minNum = min;
         this->maxNum = max;
         this->busyNum = 0;
@@ -75,7 +83,27 @@ ThreadPool::ThreadPool(int min, int max)
     if (taskQ) delete taskQ;
 }
 
-void* ThreadPool::worker(void* arg)
+ThreadPool::~ThreadPool(){
+    //关闭线程池
+    this->shutdown = true;
+    //阻塞回收管理者线程
+    this->managerID.join();
+    //唤醒阻塞的消费者线程
+    for (int i=0;i < this->liveNum; i++){
+        this->notEmpty.notify_all();
+    }
+
+    // 释放堆内存
+    if (this->taskQ){
+        delete this->taskQ;
+    }
+    if (this->threadIDs){
+        delete[] threadIDs;
+    }
+
+}
+
+void* ThreadPool::worker()
 {
     //ThreadPool* pool = static_cast<ThreadPool*>(arg);
     //等价于
@@ -129,10 +157,82 @@ void ThreadPool::threadExit()
 {
     for (int i=0;i<this->maxNum;i++){
         if (this->threadIDs[i].get_id()==std::this_thread::get_id()){
-            this->thread_avaliable[i];
+            this->thread_running[i] = false;
             cout << "threadExit() called, " << std::this_thread::get_id() <<"exciting..."<<endl;
             break;
         }
     }
     pthread_exit(NULL);
+}
+
+
+void* ThreadPool::manager(){
+    while(this->shutdown){
+        sleep(3);
+
+        //取出线程池中任务的数量和当前线程的数量
+        //取出忙线程的数量
+        this->mtxPool.lock();
+        int queueSize = this->taskQ->taskNumber();
+        int liveNum = this->liveNum;
+        int busyNum = this->busyNum;
+        this->mtxPool.unlock();
+
+        //添加线程
+        //任务个数 > 存活的线程 && 存活的线程 < 最大线程数
+        if (queueSize > liveNum && liveNum < this->maxNum){
+            this->mtxPool.lock();
+            int counter = 0;
+            for (int i=0; i < this->maxNum && counter < NUMBER//?
+                && this->liveNum < this->maxNum; i++)
+            {
+                if (this->thread_running[i] == 0)
+                {
+                    this->thread_running[i] = true;
+                    this->threadIDs[i] = thread(&ThreadPool::worker,this);
+                    counter++;
+                    this->liveNum++;
+                }
+            }
+            this->mtxPool.unlock();
+        }
+
+        // 销毁线程
+        // 忙线程*2 < 存活线程 && 存活线程 > 最小线程
+        if (this->busyNum*2 < this->liveNum > this->minNum){
+            this->mtxPool.lock();
+            this->exitNum = NUMBER;
+            this->mtxPool.unlock();
+            //让工作线程自杀
+            for (int i=0; i < NUMBER; i++){
+                this->notEmpty.notify_all();
+            }
+        }
+    }
+    return nullptr;
+}
+
+void ThreadPool::addTask(Task task){
+
+    if (this->shutdown){
+        return;
+    }
+
+    //添加任务
+    this->taskQ->AddTask(task);
+    this->notEmpty.notify_all();
+}
+
+int ThreadPool::getBusyNumber(){
+    this->mtxPool.lock();
+    int busyNum = this->busyNum;
+    this->mtxPool.unlock();
+    return busyNum;
+}
+
+int ThreadPool::getAliveNumber(){
+    this->mtxPool.lock();
+    int aliveNum = this->liveNum;
+    this->mtxPool.unlock();
+    return aliveNum;
 }
