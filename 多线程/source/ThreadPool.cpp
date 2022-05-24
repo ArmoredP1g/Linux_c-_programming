@@ -52,12 +52,16 @@ ThreadPool::ThreadPool(int min, int max)
     this->taskQ = new(std::nothrow) TaskQueue;
     do
     {
-        this->threadIDs = new(std::nothrow) thread[max];
-        this->thread_running = new(std::nothrow) bool[max];
+        //new 内存分配失败时默认会抛出std::bad_alloc异常，此时判断NULL没意义
+        //而"new(std::nothrow)"在分配内存失败时会返回一个空指针
+        this->threadIDs = new(std::nothrow) thread[max];        //线程数组
+        this->thread_running = new(std::nothrow) bool[max];     //线程对应运行状态
+
         if (threadIDs == nullptr || thread_running == nullptr || taskQ == nullptr){
             cout << "malloc threadIDs or taskQueue failed.." << endl;
             break;
         }
+        
         memset(this->threadIDs, 0, sizeof(thread)*max);
         memset(this->thread_running, false, sizeof(bool)*max);
         this->minNum = min;
@@ -65,15 +69,16 @@ ThreadPool::ThreadPool(int min, int max)
         this->busyNum = 0;
         this->liveNum = min;    //和最小值相等
         this->exitNum = 0;
-
         this->shutdown = false;
 
         //创建管理者线程
         this->managerID = thread(&ThreadPool::manager,this);
-        //创建工作线程
+        //创建最小数量的工作线程
         for (int i=0;i<min;i++){
             this->threadIDs[i] = thread(&ThreadPool::worker,this);
+            this->threadIDs[i].detach();
         }
+
         return;
 
     } while (0);
@@ -112,7 +117,7 @@ void* ThreadPool::worker()
     while(true){
         this->mtxPool.lock();
         //判断队列是否为空
-        while (this->taskQ->taskNumber() == 0 && !this->shutdown){//这个while有必要码？
+        while (this->taskQ->taskNumber() == 0 && !this->shutdown){//这个while有必要码？有！
             //阻塞工作线程
             this->notEmpty.wait(this->mtxPool);
 
@@ -138,12 +143,12 @@ void* ThreadPool::worker()
         //unlock
         this->busyNum++;
         this->mtxPool.unlock();
-        cout << "thread " << to_string(pthread_self()) << " start working.." << endl;
+        //cout << "thread " << to_string(pthread_self()) << " start working.." << endl;
         task.function(task.arg);
         delete task.arg;        //由于参数在堆里，fun执行完毕后需要释放内存
         task.arg = nullptr;
 
-        cout << "thread " << to_string(pthread_self()) << " end working.." << endl;
+        //cout << "thread " << to_string(pthread_self()) << " end working.." << endl;
         this->mtxPool.lock();
         this->busyNum--;
         this->mtxPool.unlock();
@@ -155,6 +160,7 @@ void* ThreadPool::worker()
 
 void ThreadPool::threadExit()
 {
+    //找自己线程id号是哪个，对应运行状态置0
     for (int i=0;i<this->maxNum;i++){
         if (this->threadIDs[i].get_id()==std::this_thread::get_id()){
             this->thread_running[i] = false;
@@ -167,7 +173,7 @@ void ThreadPool::threadExit()
 
 
 void* ThreadPool::manager(){
-    while(this->shutdown){
+    while(!this->shutdown){
         sleep(3);
 
         //取出线程池中任务的数量和当前线程的数量
@@ -176,12 +182,18 @@ void* ThreadPool::manager(){
         int queueSize = this->taskQ->taskNumber();
         int liveNum = this->liveNum;
         int busyNum = this->busyNum;
+
+        cout << "当前存活线程： "<<liveNum<<endl;
+        cout << "当前繁忙线程： "<<busyNum<<endl;
+
         this->mtxPool.unlock();
 
         //添加线程
         //任务个数 > 存活的线程 && 存活的线程 < 最大线程数
         if (queueSize > liveNum && liveNum < this->maxNum){
             this->mtxPool.lock();
+
+            //遍历线程数组，找到Number个空闲的槽位，开启新线程
             int counter = 0;
             for (int i=0; i < this->maxNum && counter < NUMBER//?
                 && this->liveNum < this->maxNum; i++)
@@ -190,6 +202,7 @@ void* ThreadPool::manager(){
                 {
                     this->thread_running[i] = true;
                     this->threadIDs[i] = thread(&ThreadPool::worker,this);
+                    this->threadIDs[i].detach();
                     counter++;
                     this->liveNum++;
                 }
